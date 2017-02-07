@@ -1,0 +1,237 @@
+---
+title: "Logistic Report"
+author: "Will Burton"
+date: "September 14, 2016"
+output: html_document
+---
+```{r, warning = F, message=F}
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(caret)
+library(pROC)
+
+df <- read.csv('../data/insurance.csv')
+  df %>% 
+  select(-mmbal_bin) %>% 
+  mutate_each(funs(factor)) -> model_df
+attach(model_df)
+
+# var_levels <- sapply(model_df, function(x) length(levels(x)))
+# var_levels <- var_levels[var_levels == 2]
+# interactions_tbl <- model_df[,names(model_df) %in% names(var_levels)]
+# 
+# significance_tbl <- NULL
+# 
+# for(i in 1:(ncol(interactions_tbl)-1)){
+#   for(j in (i+1):ncol(interactions_tbl)){
+#     var1 <- interactions_tbl[,i]
+#     var1_name <- names(interactions_tbl)[i]
+#     var2 <- interactions_tbl[,j]
+#     var2_name <- names(interactions_tbl)[j]
+#     interactions <-glm(insurance_product~ var1 + var2 + I(as.numeric(var1)*as.numeric(var2)-1), family = binomial)
+#     interactions <- summary(interactions)
+#     interactions <- interactions$coefficients
+#     if(nrow(interactions) == 3){next}
+#     rownames(interactions) <- c('intercept', var1_name, var2_name, paste0(var1_name, '*', var2_name))
+#     interactions <- data.frame(interactions)[4,]
+#     interactions <- rownames_to_column(interactions, 'variable')
+#     significance_tbl <- rbind(significance_tbl,interactions)
+#   }
+# }
+# 
+# significance_tbl %>% 
+#   filter(Pr...z.. < .001) -> significance_tbl
+# 
+# significance_tbl
+```
+
+1. Using all of the variables (including Branch of Bank) find the best model possible
+on the training data set. Use information from your first assignment, as well as
+ROC curves (do not go above 2-way interactions).
+```{r }
+# #stepwise formula based on AIC
+# #define full model
+# full_logistic_mod <- glm(insurance_product ~ . +
+#                            I(as.numeric(checking_account)*as.numeric(retirement_account)) +
+#                            I(as.numeric(checking_account)*as.numeric(money_market)) +
+#                            I(as.numeric(checking_account)*as.numeric(irabal_bin)) +
+#                            I(as.numeric(saving_account)*as.numeric(money_market)) +
+#                            I(as.numeric(retirement_account)*as.numeric(money_market)), data = model_df, family = binomial)
+# #define empty model
+# nothing <- glm(insurance_product~ 1, family = binomial)
+# 
+# 
+# #preform backwards, forwards, and stepwise selection, while optimizing AIC
+# backwards <-step(full_logistic_mod, trace = 0) # Backwards selection is the default
+# forwards <- step(nothing,
+#                  scope=list(lower=formula(nothing),upper=formula(full_logistic_mod)), direction="forward", trace = 0)
+# stepwise <- step(nothing, list(lower=formula(nothing),upper=formula(full_logistic_mod)),
+#                  direction="both",trace=0)
+# 
+
+#Took output from forward, backward, and stepwise, and added terms to satisfy model heirarchy
+
+
+#define interaction terms (could use I(var1 * var2) within the model but wanted to reduce amount of code)
+model_df$ret_mm <- as.factor((as.numeric(retirement_account)-1) * (as.numeric(money_market)-1))
+model_df$che_mm <-as.factor((as.numeric(checking_account)-1) * (as.numeric(money_market)-1))
+model_df$che_ret <-as.factor((as.numeric(checking_account)-1) * (as.numeric(retirement_account)-1))
+model_df$sav_mm <-as.factor((as.numeric(saving_account)-1) * (as.numeric(money_market)-1))
+
+
+forwards_model <- glm(insurance_product ~  savbal_bin + ddabal_bin + cdbal_bin + 
+                        branch_of_bank + checks_bin + atmamt_bin + teller_bin + 
+                        checking_account + money_market  + 
+                        saving_account + retirement_account + 
+                        ret_mm + che_mm + che_ret + sav_mm, data = model_df,
+                        family = binomial) 
+
+backwards_model <- glm(insurance_product ~  checking_account + retirement_account + 
+                         money_market + branch_of_bank + ddabal_bin + checks_bin + 
+                         teller_bin + savbal_bin + atmamt_bin + cdbal_bin +
+                         saving_account +  che_ret + sav_mm, data = model_df,
+                         family = binomial) 
+
+
+stepwise_model <- glm(insurance_product ~ savbal_bin + ddabal_bin + cdbal_bin + branch_of_bank + 
+                        checks_bin + atmamt_bin + teller_bin + checking_account + money_market +
+                        retirement_account + saving_account + ret_mm +  che_ret + 
+                        sav_mm, data = model_df,
+                         family = binomial)
+
+```
+<br>
+
+1. Show me the ROC curve for your final model. (Make sure the axes and titles look
+professional.)
+
+```{r , warning = F }
+#calculate roc curves for each model
+calculate_ROC <- function(model, response, name, probs = NULL, i = NULL, test = TRUE){
+  df <- NULL
+  tp_rates <- NULL
+  fp_rates <- NULL
+  probs <- if(is.null(probs)){predict(model, type= 'response')} else{probs}
+  AUC <- as.numeric(auc(response, probs))
+    for(threshold in 0:1000){
+      preds <- ifelse(probs > (threshold/1000), 1,0)
+      confusion_matrix <- confusionMatrix(preds, response)$table
+      POS <- confusion_matrix[2,2]
+      NEG <- confusion_matrix[1,1]
+      FALPOS <- confusion_matrix[2,1]
+      FALNEG <- confusion_matrix[1,2]
+      tp_rate <- POS / (POS + FALNEG)
+      fp_rate <- FALPOS / (NEG + FALPOS)
+      tn_rate <- NEG / (NEG + FALPOS)
+      SPECIFICITY  <- tn_rate
+      SENSIT <- tp_rate
+      M1SPEC <- fp_rate
+      df <- rbind(df, data.frame(name, AUC,'PROB' = threshold/1000,
+                               POS, NEG, FALPOS, FALNEG, SENSIT,
+                               M1SPEC, youden_index = (SENSIT + SPECIFICITY - 1), 
+                               accuracy = (POS + NEG)/(POS + NEG + FALPOS + FALNEG))) 
+                               
+    }
+  return(df)
+}  
+
+
+#ROC train set
+Youden <- calculate_ROC(forwards_model, as.numeric(insurance_product)-1, 'forwards')
+
+
+#plot roc curve for final model
+ggplot(Youden, aes(x = M1SPEC, y = SENSIT)) + geom_line(size = 1) + geom_abline(slope = 1, intercept = 0) + xlab('False Positive Rate') + 
+  ylab('True Positive Rate') + ggtitle("ROC Curve For Optimal Logistic Model") + 
+    annotate("text", label = paste0("AUC = ", round(mean(Youden$AUC),4)), x = .75, y = .25, size = 5, colour = "Black")
+```
+<br>
+What is the maximum Youden Index?
+
+
+```{r }
+
+Youden %>% 
+  filter(youden_index == max(youden_index)) ->  max_youden
+
+Youden %>% 
+  filter(accuracy == max(accuracy)) %>% 
+  select(PROB) ->  max_accuracy
+
+print(max_youden %>% select(PROB, youden_index))
+```
+<br>
+Based on the cut-off level that you defined in the previous part, create a classification table of your results. How many false positives and false negatives do you have?
+
+```{r }
+
+vals <- max_youden %>% select(NEG, FALNEG, FALPOS, POS)
+tbl <- matrix(as.numeric(vals), nrow = 2, ncol = 2, byrow = T)
+tbl<- as.table(tbl)
+rownames(tbl)<-c(0,1)
+colnames(tbl) <- c(0,1)
+names(dimnames(tbl)) <- c("Prediction", "Reference")
+
+tbl
+vals %>% select(FALPOS, FALNEG) -> vals
+names(vals) <- c('False Positives', 'False Negatives')
+```
+<br>
+Build a classification table of your results using your validation data set. 
+```{r }
+
+library(sas7bdat)
+valid <- read.sas7bdat('../data/insurance_hw2_valid.sas7bdat')
+  
+cols <- unlist(sapply(attr(valid,'column.info'), function(x) x$label))
+cols <- as.character(sapply(cols, function(x) gsub(' ','_', x)))
+names(valid)[1:length(cols)] <- cols  
+names(valid) <- tolower(names(valid))
+valid %>% 
+  select(-mmbal_bin) %>% 
+  mutate_each(funs(factor)) -> valid
+  
+detach(model_df)
+attach(valid)
+valid$ret_mm <- as.factor((as.numeric(retirement_account)-1) * (as.numeric(money_market)-1))
+valid$che_mm <-as.factor((as.numeric(checking_account)-1) * (as.numeric(money_market)-1))
+valid$che_ret <-as.factor((as.numeric(checking_account)-1) * (as.numeric(retirement_account)-1))
+valid$sav_mm <-as.factor((as.numeric(saving_account)-1) * (as.numeric(money_market)-1))
+
+
+probs <- predict(forwards_model, valid, type = 'response')
+preds_youden <- ifelse(probs > max_youden$PROB,1,0)
+preds_accuracy <- ifelse(probs > max_accuracy[1,],1,0)
+tbl_youden <- confusionMatrix(preds_youden, insurance_product)$table
+tbl_youden
+
+tbl_accuracy <- confusionMatrix(preds_accuracy, insurance_product)$table
+tbl_accuracy
+
+```
+<br>
+How many false positives and false negatives do you have? 
+
+```{r}
+out <- c(tbl_youden[2,1], tbl_youden[1,2])
+names(out) <- c("False Positives", "False Negatives")
+out 
+
+```
+<br>
+What is your misclassification error rate? 
+
+```{r}
+#using youdens
+(tbl_youden[1,1] + tbl_youden[2,2]) /  length(probs)
+
+#using threshold for max accuracy
+(tbl_accuracy[1,1] + tbl_accuracy[2,2]) /  length(probs)
+
+```
+
+
+
+  
+

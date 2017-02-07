@@ -1,0 +1,138 @@
+---
+title: "Explore Insurance Dataset"
+author: "Will Burton"
+date: "September 8, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# This document will define variables used in the dataset, and go through a short exploratory analysis.
+
+##Variable Breakdown
+*****
+###**Binary variables:**
+####checking_account, saving_account  <br> 
+####retirement_account, money_market  <br>
+####insurance_product <br>
+1 = person has attribute <br>
+0 = person does not have attribute
+<br>
+<br>
+
+###**Ordinal variables (more than 2 levels) :**
+####ddabal_bin (checking account balance binned)<br>
+ddabal = 0 ddabal_bin = 1<br>
+ddabal > 0 & ddabal <=100 ddabal_bin = 2<br>
+ddabal > 100 & ddabal <=300 ddabal_bin = 3<br>
+ddabal > 300 & ddabal <=750 ddabal_bin = 4<br>
+ddabal > 750 & ddabal <=1250 ddabal_bin = 5<br>
+ddabal > 1250 & ddabal <=2250 ddabal_bin = 6<br>
+ddabal > 2250 & ddabal <=6000 ddabal_bin = 7<br>
+ddabal > 6000 ddabal_bin = 8<br>
+
+####depamt_bin (amount deposited in checking account)
+depamt = 2                      depamt_bin = 1<br>
+depamt > 2 & depamt <=700       depamt_bin = 2<br>
+depamt > 700 & depamt <=2200    depamt_bin = 3<br>
+depamt > 2200 & depamt <=6500   depamt_bin = 4<br>
+depamt > 6500                   depamt_bin = 5<br>
+
+####checks_bin (Number of checks written)
+checks = 0                 checks_bin = 1<br>
+checks > 0 & checks <=2    checks_bin = 2<br>
+checks > 2 & checks <=4    checks_bin = 3<br>
+checks > 4                 checks_bin = 4<br>
+
+####savbal_bin (balance in savings account)
+savbal = 0                       savbal_bin = 1<br>
+savbal > 0 & savbal <=50         savbal_bin = 2<br>
+savbal > 50 & savbal <=250       savbal_bin = 3<br>
+savbal > 250 & savbal <=1250     savbal_bin = 4<br>
+savbal > 1250 & savbal <=3000    savbal_bin = 5<br>
+savbal > 3000 & savbal <=8000    savbal_bin = 6<br>
+savbal > 8000                    savbal_bin = 7<br>
+
+####teller_bin (Number of teller banking transactions)
+teller = 0                 teller_bin = 1<br>
+teller > 0 & teller <=3    teller_bin = 2<br>
+teller > 3                 teller_bin = 3<br>
+
+####atmamt_bin (amount withdrawn from ATM)
+atmamt < 5                       atmamt_bin = 1<br>
+atmamt > 5 & atmamt <=3750       atmamt_bin = 2<br>
+atmamt > 3750                    atmamt_bin = 3<br>
+
+####cdbal_bin (amount in CD)
+cdbal < 500                      cdbal_bin = 1<br>
+cdbal > 500 & cdbal <=9200       cdbal_bin = 2<br>
+cdbal > 9200                     cdbal_bin = 3<br>
+
+####irabal_bin (Number of IRA accounts)
+irabal < 1             irabal_bin = 1<br>
+irabal > 1             irabal_bin = 2<br>
+
+####mmbal_bin (Amount in money market)
+mmbal < 1000 mmbal_bin = 1<br>
+mmbal > 1000 mmbal_bin = 2<br>
+<br>
+<br>
+
+
+###**Categorical variables:**
+####acctage_bin (age of oldest account)
+acctage = 20     acctage_bin = 1<br>
+acctage > 20     acctage_bin = 2<br>
+acctage = .      acctage_bin = 3<br>
+
+####invbal_bin (Amount in Investments)
+invbal < 1000                    invbal_bin = 1<br>
+invbal > 1000 & invbal <=10000   invbal_bin = 2<br>
+invbal > 10000                   invbal_bin = 3<br>
+invbal = 10000                   invbal_bin = 4<br>
+
+####phone_bin (Number of telephone banking transactions)
+phone = 0                 phone_bin = 1<br>
+phone > 0 & phone <=1     phone_bin = 2<br>
+phone > 1                 phone_bin = 3<br>
+phone = .                 phone_bin = 4<br>
+
+####area_classification
+####branch_of_bank
+
+
+*****
+
+
+
+The following section will display each variable in a barplot along with the associated table below the histogram
+
+
+```{r, message = FALSE, warning = F}
+
+library(sas7bdat)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+# df <- read.sas7bdat('C:/Users/Will/Documents/MSA/Homeworks/HW 1 Logistic/insurance_hw1.sas7bdat')
+# labels <- unlist(sapply(attr(df, "column.info"), function(x) x$label))
+# labels<- gsub(" ","_", labels)
+# colnames(df)[1:7] <- labels
+# colnames(df) <- tolower(colnames(df))
+# write.csv(df, 'insurance.csv', row.names = F)
+
+df <- read.csv('insurance.csv')
+str(df)
+summary(df)
+df %>% 
+  mutate_each(funs(factor)) -> df
+
+for(colname in names(df)){
+  print(ggplot(df) + geom_bar(aes(x = eval(eval(parse(text = paste("df$", colname, sep = "")))))) +
+          xlab(colname) + ggtitle(paste("barplot of ", colname)))
+  print(table(eval(parse(text=paste("df$", colname, sep = "")))))
+}
+
+```

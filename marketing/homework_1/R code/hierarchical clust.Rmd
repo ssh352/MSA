@@ -1,0 +1,270 @@
+---
+title: "Hierarchical Homework"
+author: "Will Burton"
+date: "November 7, 2016"
+output: html_document
+---
+
+### Marketing Homework 1 -- Hierarchical Clustering <br>
+The Marketing director of a theater production wants to find different customer segments so the company can invest in productions that may be more attractive by the different segments. 
+
+
+```{r, message=F, warning=F}
+
+# load necessary libraries
+library(randomForest)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(rpart)
+library(NbClust)
+
+#load data
+setwd('C:/Users/Will/Documents/MSA/fall3/marketing/homework1/data')
+df <- read.csv('theater.csv')
+
+#look at data structure
+str(df)
+
+#notice there are 23 NA values for age
+#and 26 NA values for education
+summary(df)
+
+
+```
+
+<br>
+The imputation method for the missing values are not displayed here but are in the R code in the other R file in this repo.  The values are imputed through an ensemble of linear regression and random forest models. These models showed an improvement over mean imputation when compared to a test set.<br>
+<br>
+Now that the data is clean there are Four main necessary items left when it comes to hierarchical clustering.<br> 
+<br>
+
+1. Standardize/Normalize the data so things are on a similar scale <br>
+2. Which method to calculate the similarity matrix <br>
+3. Which method to use to combine values into clusters <br>
+4. How many clusters to choose <br>
+
+***
+
+<br>
+1. Normalization <br>
+The following code normalizes the data (forces it between 0 and 1)
+```{r, echo = FALSE}
+############################### impute missing values #################
+#######################################################################
+#we will build a model to impute the missing values
+set.seed(1343)
+full_df <- df[complete.cases(df),]
+na_df <- df[!complete.cases(df),]
+sample <- sample(1:nrow(full_df),nrow(full_df)*0.75)
+train <- full_df[sample,]
+test <- full_df[-sample,]
+ 
+####### Start by imputing education
+#build linear and random forest models
+linear_mod_educ <- lm(educ ~ attitude + planning + goodval + 
+                   income + cnty, data = train[,-6])
+set.seed(5)
+forest_educ <- randomForest(educ ~ ., data = train[,-6])
+
+#calculate predictions and plot residuals
+educ_pred_forest <- round(predict(forest_educ, test[-6]))
+educ_pred_lm <- round(predict(linear_mod_educ, test[,-6]))
+edu_pred_df <- data.frame(actual = test$educ, forest = educ_pred_forest, 
+                          forest_resid = educ_pred_forest - test$educ,
+                          forest_sq_er = (educ_pred_forest - test$educ)^2,
+                          lm = educ_pred_lm,
+                          lm_resid = educ_pred_lm - test$educ,
+                          lm_sq_er = (educ_pred_lm - test$educ)^2,
+                          mean_val = (round(mean(train$educ)) - test$educ)^2,
+                          ensemble_sq_er = ((round((educ_pred_forest + educ_pred_lm)/2) - test$educ)^2))
+
+mse_ensemble = sum(edu_pred_df$ensemble_sq_er)/nrow(edu_pred_df)
+mse_forest = sum(edu_pred_df$forest_sq_er)/nrow(edu_pred_df)
+mse_lm = sum(edu_pred_df$lm_sq_er)/nrow(edu_pred_df)
+mse_mean = sum(edu_pred_df$mean)/nrow(edu_pred_df)
+
+
+
+####### Now we impute for age
+#build linear and random forest models
+linear_mod_age <- lm(age ~ attitude + parents + goodval + income, data = train[,-7])
+set.seed(5)
+forest_age <- randomForest(age ~ ., data = train[,-7])
+
+#calculate predictions and plot residuals
+age_pred_forest <- round(predict(forest_age, test[-7]))
+age_pred_lm <- round(predict(linear_mod_age, test[,-7]))
+age_pred_df <- data.frame(actual = test$age, forest = age_pred_forest, 
+                          forest_resid = age_pred_forest - test$age,
+                          forest_sq_er = (age_pred_forest - test$age)^2,
+                          lm = age_pred_lm,
+                          lm_resid = age_pred_lm - test$age,
+                          lm_sq_er = (age_pred_lm - test$age)^2,
+                          mean_val = (round(mean(train$age)) - test$age)^2,
+                          ensemble_sq_er = (round((age_pred_forest + age_pred_lm)/2) - test$age)^2)
+
+mse_ensemble = sum(age_pred_df$ensemble_sq_er)/nrow(age_pred_df)
+mse_forest = sum(age_pred_df$forest_sq_er)/nrow(age_pred_df)
+mse_lm = sum(age_pred_df$lm_sq_er)/nrow(age_pred_df)
+mse_mean = sum(age_pred_df$mean)/nrow(age_pred_df)
+
+
+
+
+#' ensemble had lower MSE on the test set for age, but the 
+#' basic linear model had a lower MSE on the test set for education
+#'  so we will impute using these two methods
+#'  
+
+######   Imputation
+impute_educ_df <- na_df[is.na(na_df$educ),]
+impute_age_df <- na_df[is.na(na_df$age),]
+
+new_educ <- round(predict(linear_mod_educ, impute_educ_df)) 
+new_age <- round((predict(forest_age, impute_age_df) + 
+                   predict(linear_mod_age, impute_age_df))/2)
+
+df$age[as.numeric(names(new_age))] <- new_age
+df$educ[as.numeric(names(new_educ))] <- new_educ
+
+summary(df)  ##NA values are all gone
+###########################################################################
+############################### Done imputing###############################
+```
+
+```{r}
+#Create normalize function
+normalize <- function(x){
+  return((x - min(x))/(max(x) - min(x)))
+}
+
+#apply the normalize function to each column
+norm_df <- sapply(df[1:(length(df)-1)],normalize)
+
+```
+
+<br>
+2. Calculating similarity metrics: <br>
+For this assignment we only take into consideration the Manhattan and eucliden distances.
+
+```{r }
+
+# These two calculations create a distance matrix between the
+# ob
+dist_matrix_euclidean <- dist(norm_df, method = 'euclidean')
+dist_matrix_manhattan <- dist(norm_df, method = 'manhattan')
+
+```
+<br>
+3. Which method to use to combine values into clusters (which makes the most defined clusters) <br>
+
+
+```{r}
+# hierarchical clustering using a euclidean distance matrix and wards distance
+# for forming clusters
+hier_clust_euclid_ward <- hclust(dist_matrix_euclidean, method = 'ward.D')
+```
+<br>
+This dendogram shows there are a possibility of 3 or 5 major clusters
+```{r}
+plot(hier_clust_euclid_ward)
+```
+
+```{r}
+# hierarchical clustering using a euclidean distance matrix and average distance
+# for forming clusters
+hier_clust_euclid_average <- hclust(dist_matrix_euclidean, method = 'average')
+```
+<br>
+The average method does not produce very interpretable clusters in the dendogram
+```{r}
+plot(hier_clust_euclid_average)
+```
+
+```{r}
+# hierarchical clustering using a manhattan distance matrix and wards distance
+# for forming clusters
+hier_clust_manhattan_ward <- hclust(dist_matrix_manhattan, method = 'ward.D')
+```
+<br>
+The dendogram shows a strong possibility of 2, maybe 5 clusters
+```{r}
+plot(hier_clust_manhattan_ward)
+```
+```{r}
+# Hard to tell what is going on
+hier_clust_manhattan_average <- hclust(dist_matrix_manhattan, method = 'average')
+# It appears 3 clusters does appear to be a correct number of clusters
+```
+<br>
+again, The average method does not produce very interpretable clusters in the dendogram
+```{r}
+plot(hier_clust_manhattan_average)
+```
+<br>
+<br>
+
+4. Now we need to choose the optimal number of clusters<br>
+To help us do this we use the package NbClust. This package looks at ~ 20 different indices to help make this decision. Since wards was the most interpretable, We will calculate all the different indices on this method.
+
+```{r}
+clust_euclidean_ward <- NbClust(norm_df, distance = 'euclidean', method = 'ward.D')
+clust_manhattan_ward <- NbClust(norm_df, distance = 'manhattan', method = 'ward.D')
+```
+
+The number of clusters from manhattan-ward was 2 and for euclidean-ward 3.  Since we want to 
+Help the marketer develop production types we will start at 3 and see attributes associated with each.
+
+
+```{r}
+clusters <- cutree(hier_clust_euclid_ward, k = 3)
+df$clusters <- clusters
+
+
+df %>% 
+  group_by(clusters) %>% 
+  mutate(n = n()) %>% 
+  summarise_each(funs(mean), -cnty) ->  df_summary
+
+data.frame(df_summary)
+```
+
+It is hard to glean much useful information from these 3 clusters. We move to 5 clusters for this reason
+
+```{r}
+
+clusters <- cutree(hier_clust_euclid_ward, k = 5)
+df$clusters <- clusters
+
+
+df %>% 
+  group_by(clusters) %>% 
+  mutate(n = n()) %>% 
+  summarise_each(funs(mean), -cnty) ->  df_summary
+
+data.frame(df_summary)
+```
+
+
+These clusters are much more defined and we can now make some marketing suggestions.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

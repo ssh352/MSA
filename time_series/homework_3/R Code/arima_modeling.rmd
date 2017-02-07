@@ -1,0 +1,129 @@
+---
+title: "Arima Modeling"
+author: "Will Burton"
+date: "September 24, 2016"
+output: html_document
+---
+
+For time series homework 3, we are tasked with modeling the tuscan and phoenix sales data. The data we are using for this assignment comes from homework 2. We took raw data and made it stationary by removing trend and differencing.
+<br>
+
+We start out plotting the stationary data
+```{r, warning = F, message = F}
+library(forecast)
+
+#TimeSeries Homework 3
+
+stationary_tu <- read.csv("../data/stationary_tu.csv")
+stationary_ph <- read.csv("../data/stationary_ph.csv")
+  
+
+stationary_tu <- ts(stationary_tu)
+stationary_ph <- ts(stationary_ph)
+
+#plot Stationary data
+par(mfrow = c(1,2))
+plot(stationary_tu, type = 'l', main = 'Stationary Tuscan Sales')
+plot(stationary_ph, type = 'l', main = 'Stationary Phoenix Sales')
+
+
+#Define lag function
+lag <- function(x,k){
+  x <- c(rep(NA,k),x[1:(length(x)-k)])
+  return(x)
+}
+
+```
+
+<br>
+now that we've viewed the data to verify we have the correct data sets, we start modeling
+<br> 
+<br>
+
+****
+
+
+**Sales data from Tuscan, AZ are modeled first**
+<br>
+<br>
+
+The first step when modeling is to look at the Autocorrelation and Partial Autocorrelation plots. These plots can give us an idea on whether we need to model at all and what type of model to use.
+```{r}
+
+#Model Tuscan data
+
+#look at ACF and PACF plots to determine how to model the data
+par(mfrow = c(1,2))
+Acf(stationary_tu, ylim = c(-1,1), main = 'ACF Tuscan Sales')
+Pacf(stationary_tu, ylim = c(-1,1), main = 'PACF Tuscan Sales')
+```
+<br>
+according to the ACF and PACF plots, it appears a MA-1 model will be correct for this scenario. This is because
+There is one spike in the ACF and an exponentially decreasing PACF.
+<br>
+<br>
+The MA-1 model is created and the ACF and PACF as well as Ljungs white noise test are all performed on the residuals
+```{r}
+arima_tu <- Arima(stationary_tu, order = c(0,0,1))
+residuals_tu <- arima_tu$residuals
+
+par(mfrow = c(1,3))
+Acf(residuals_tu, ylim = c(-1,1), main = 'ACF Tuscan Sales Residuals')
+Pacf(residuals_tu, ylim = c(-1,1), main = 'PACF Tuscan Sales Residuals')
+
+White.LB <- rep(NA, 20)
+for(i in 1:20){
+  White.LB[i] <- Box.test(residuals_tu, lag = i, type = "Ljung", fitdf = 1)$p.value
+}
+
+White.LB <- pmin(White.LB, 0.2)
+barplot(White.LB, main = "Ljung-Box Test P-values", ylab = "Probabilities", xlab = "Lags", ylim = c(0, 0.2))
+abline(h = 0.01, lty = "dashed", col = "black")
+abline(h = 0.05, lty = "dashed", col = "black")
+```
+<br>
+The residuals tell us that we are left with white noise after modeling and the model is complete.
+<br>
+
+****
+ 
+**Modeling Pheonix, AZ sales data**
+<br>
+Again, The first step when modeling is to look at the Autocorrelation and Partial Autocorrelation plots. These plots can give us an idea on whether we need to model at all and what type of model to use.
+
+```{r}
+
+#model phoenix data
+#Look at ACF and PACF plots to determine best model
+par(mfrow = c(1,2))
+Acf(stationary_ph, ylim = c(-1,1), main = 'ACF Tuscan Sales')
+Pacf(stationary_ph, ylim = c(-1,1), main = 'PACF Tuscan Sales')
+```
+
+The PACF spikes at the first lag telling me to use a AR-1 model
+```{r }
+arima_mod_ph <- lm(stationary_ph ~ lag(stationary_ph,1))
+arima_mod_ph <- Arima(stationary_ph,  c(1,0,0))
+par(mfrow = c(1,3))
+Acf(arima_mod_ph$residuals, ylim = c(-1,1), main = 'ACF Tuscan Sales Residuals')
+Pacf(arima_mod_ph$residuals, ylim = c(-1,1), main = 'PACF Tuscan Sales Residuals')
+
+
+White.LB <- rep(NA, 20)
+for(i in 1:20){
+  White.LB[i] <- Box.test(arima_mod_ph$residuals, lag = i, type = "Ljung", fitdf = 1)$p.value
+}
+
+White.LB <- pmin(White.LB, 0.2)
+barplot(White.LB, main = "Ljung-Box Test P-values", ylab = "Probabilities", xlab = "Lags", ylim = c(0, 0.2))
+abline(h = 0.01, lty = "dashed", col = "black")
+abline(h = 0.05, lty = "dashed", col = "black")
+
+```
+<br>
+After modeling using the AR-1 model, we are left with white noise in the residuals.
+<br>
+<br>
+
+
+

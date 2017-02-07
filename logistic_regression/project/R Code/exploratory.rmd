@@ -1,0 +1,393 @@
+---
+title: "Exploratory"
+author: "Will Burton"
+date: "September 15, 2016"
+output: html_document
+---
+
+###This Analysis is broken down into four main sections 
+
+####1. General Exploration: <br>
+Get to know general information about the dataset ~ how big is it, what type of variables are there, what do variable distributions look like
+<br>
+
+####2. Categorical Exploration: <br>
+What associations exist between categorical variables and the response?
+<br>
+
+####3. Continuous Exploration: <br>
+Are the continuous variables highly correlated with eachother? Is there a linear association with the log odds? Should the variables be treated as continuous or cut into categories?
+<br>
+
+####4. Initial Modeling:<br>
+What significant interactions exist? 
+<br>
+<br>
+
+****
+****
+
+####1. General Exploration
+
+```{r, warning = F, message = F}
+#exploratory analysis
+library(tibble)
+library(sas7bdat)
+library(dplyr)
+library(ggplot2)
+library(rgl)
+# library(car)
+library(tidyr)
+
+df <- read.sas7bdat('C:/Users/Will/Documents/MSA/fall/logistic_regression/homeworks/MSA_logistic_proj/data/construction.sas7bdat')
+df <- data.frame(df)
+response <- df$win_bid
+
+```
+
+```{r, message = F }
+#look at data structure
+str(df)
+
+#look at first few rows
+head(df)
+
+#look at summary
+summary(df)
+#idetify number of unique variable levels
+sapply(df, function(x) length(unique(x)))
+
+#make binary variables and sector, factors
+names(df) <- tolower(names(df))
+
+df %>%
+  mutate_each(funs(as.factor),c(4,grep('competitor', names(df))) ) -> df
+
+```
+<br>
+look at histograms of each continuous variable, barplots of each factor variable
+```{r, message=F, warning=F }
+df %>% 
+  select(grep('^competitor|win_bid', names(df))) -> x
+  gather(x,key = competitor, value = value, grep('competitor',names(x)))-> competitors
+
+ggplot(competitors) + geom_bar(aes(value, fill = win_bid)) + facet_wrap(~competitor, nrow = 2)
+
+i = 0
+factor_df <- df %>% select(-grep('^competitor', names(df)))
+for(col in factor_df){
+  i <- i + 1
+  if(is.factor(col)){
+      print(ggplot(factor_df) + geom_bar(aes(col, fill = win_bid) ) + xlab(names(factor_df)[i]))
+  }
+}
+  
+i = 0
+for(col in df){
+  i <- i + 1
+  if(is.numeric(col)){
+    print(ggplot(df) + geom_histogram(aes(col, fill = win_bid)) + xlab(names(df)[i]))
+  }
+}
+
+```
+
+*****
+*****
+
+<br>
+
+####2. Categorical Exploration: 
+
+<br>
+Start out looking more into sector and region_of_country variables
+```{r }
+#expore sector variable
+table(df$sector,df$win_bid)[,2]/table(df$sector)
+```
+potentially combine sectors 1,3,8,9,10 into one sector (around .2) <br>
+potentially combine sectors 4,5,6      into one sector <br>
+potentially combine sectors 7 (remains the same) into one sector <br>
+
+Explore region variable
+```{r}
+table(df$region_of_country,df$win_bid)[,2]/table(df$region_of_country)
+```
+
+potentially combine Southeast and West <br>
+potentially combine mid-west, southwest
+<br>
+<br>
+<br>
+
+
+Examine region stratified by sector
+```{r }
+
+table(df$region_of_country, df$sector, df$win_bid)
+
+```
+It appears any interaction between these two variables would create a very sparse matrix. Though condensed versions of the variables may not be.. lets find out
+```{r}
+df$sector <- as.factor(ifelse(df$sector %in% c(1,3,8,9,10),1,
+                   ifelse(df$sector %in% c(4,5,6),2,3)))
+
+df$region_of_country <- as.factor(ifelse(df$region_of_country %in% c('Southeast', 'West'),'SE_W',
+                               ifelse(df$region_of_country %in% c('Mid-west', 'Southwest'), 'M_S_W',
+                               'Northeast')))
+
+table(df$region_of_country, df$sector, df$win_bid)
+```
+This new table shows no issues of quasi-separation and it appears an interaction may be useful in modeling.
+
+<br>
+<br>
+<br>
+
+Explore more into the competitor binary variables. The first histogram is looking at the sum of the number of competitors for each observation
+```{r }
+df %>% 
+  select(c(grep('^competitor',colnames(df))))%>%
+  mutate_each(funs(as.numeric(.) -1)) %>% 
+  mutate(num_comp = rowSums(.)) %>% 
+  mutate(win_bid = df$win_bid)-> competitor_df
+  ggplot(competitor_df) + geom_bar(aes(x = num_comp, fill = win_bid))
+```
+<br>
+Look at the correlation between the number_of_competitor_bids and the sum of the binary competitor variables 
+```{r }
+competitor_df %>% 
+  mutate(number_of_competitor_bids = as.numeric(df$number_of_competitor_bids)) -> competitor_df
+ggplot(competitor_df) + geom_point(aes(x = num_comp, y = number_of_competitor_bids)) + 
+   annotate("text", x = 6, y = 2, label = paste('correlation = ', 
+                                            round(cor(competitor_df$num_comp, competitor_df$number_of_competitor_bids),2)))
+```
+<br>
+This is kind of odd as you would expect the variables to be a little mote correlated. 
+<br>
+<br>
+
+In attempt to Extract more information out of the number of competitor binary variables we make continuous variables using all the binary variables as inputs. A continuous variable is made using weights based on association with win_bid. The graphs below show the new variable in histograms and density plots.
+```{r, message = F}
+
+#make a continuous variable that is weighted based on the probability of win_bid
+  
+  weights <- sapply(competitor_df[,1:10], function(x){
+                 tbl <- table(x, competitor_df$win_bid)
+                 pct_win <- tbl[2,2] / (tbl[2,1] + tbl[2,2])
+                 weight <- 1/(1-pct_win)
+                 return(weight * x)
+  }
+  )
+
+ #row_weight_mult is the product of all the competitor bid weights multiplied togethor 
+ row_weight_mult <- apply(weights,1,function(x) {
+                  x[x == 0] <-1
+                  return(prod(x))})
+
+competitor_df$row_weight_mult <- row_weight_mult
+
+ggplot(competitor_df) + geom_histogram(aes(x = row_weight_mult, fill = win_bid))
+ggplot(competitor_df) + geom_density(aes(x = row_weight_mult, fill = win_bid), alpha = 0.2)
+
+df$row_weight_mult <- row_weight_mult
+
+
+```
+<br>
+
+****
+****
+<br>
+
+####3. Explore Continuous Variables
+
+<br>
+<br>
+Start out by looking at correlations between continuous variables
+```{r }
+
+cor(df[,sapply(df, is.numeric)])
+pairs(df[,sapply(df, is.numeric)])
+```
+<br>
+The variables winning_bid_price__millions_,  bid_price__millions_, and estimated_cost__millions_ are all highly correlated.
+
+```{r}
+ggplot(df, aes(x = winning_bid_price__millions_ , fill = factor(win_bid))) + geom_density(alpha = .3) 
+ggplot(df, aes(x = bid_price__millions_ , fill = factor(win_bid))) + geom_density(alpha = .3) 
+ggplot(df, aes(x = estimated_cost__millions_ , fill = factor(win_bid))) + geom_density(alpha = .3) 
+```
+<br>
+There may be no improvement in accuracy by keeping all three, two will most likely be eliminated.
+Instead of simply eliminating two, principal components is performed to create a variable that retains information of all three.
+
+```{r }
+df  %>% 
+  select(estimated_cost__millions_,
+         bid_price__millions_,
+         winning_bid_price__millions_) -> pca_df
+
+plot3d(pca_df$estimated_cost__millions_, pca_df$bid_price__millions_, pca_df$winning_bid_price__millions_ )
+
+#the 3 variables are converted into a single variable using PCA
+pca = prcomp(pca_df, scale=F) 
+new_var <- pca$x[,1]
+df$pc <- new_var
+summary(pca)
+```
+The first principal component accoiunted for 99.92% of the variation. We will keep this variable and eliminate the variables used to create it
+<br>
+<br>
+<br>
+
+The new variable created from prinipal components is plotted along with the remaining continuous variables in density plots
+```{r }
+#new variable plottes in density plot
+ggplot(df, aes(x = new_var , fill = factor(win_bid))) + geom_density(alpha = .3) 
+
+```
+
+```{r}
+#The remaining variables are both very interesting
+ggplot(df, aes(x = estimated_years_to_complete, fill = factor(win_bid))) + geom_density(alpha = .3) 
+```
+<br> 
+It appears the company is focused on completing long projects, and less on short term projects... Or less companies compete for long term projects
+
+```{r}
+ggplot(df, aes(x = as.numeric(number_of_competitor_bids), fill = factor(win_bid))) + geom_density(alpha = .3) 
+```
+<br>
+The number of competitors appears to be an extremely good predictor of whether a bid is won or not.
+
+<br>
+Now that the continuous variables have been examined... Should the continuous variables be treated as continuous or cut into different levels as factors, OR should additional polynomial terms be added? 
+To answer these questions, each continuous variable is cut into 25 different levels and plotted against the log odds of winning a bid.  If the log odds are linear, then the points will form approximately a straight line.
+If the log odds are non-linear, then the points will display a non-linear pattern. If There appears to be some step type pattern then we may need to convert the continuous into a categorical variable
+```{r}
+convert_to_factor <- function(var, n_levels){
+  obs_per_level <- rep(floor(length(var)/n_levels),n_levels)
+  remainder <- rep(1,(length(var) - sum(obs_per_level)))
+  obs_per_level[1:length(remainder)] <- obs_per_level[1] + remainder
+  var <- data.frame(value = var)
+  var$index <- 1:nrow(var)
+  var$cut <- NA
+  var <- var[order(var[,1]),]
+  for(i in 0:(n_levels-1)){
+    min <- ifelse(i == 0,1,sum(obs_per_level[1:i]) + 1)
+    max <- sum(obs_per_level[1:(i + 1)])
+    var$cut[min:max] <- i
+  }
+  var$cut <- as.factor(var$cut)
+  var %>% 
+    group_by(cut) %>% 
+    mutate(mean_cut = round(mean(value),2)) %>% 
+    arrange(index) -> var
+  return(var$mean_cut)
+}
+
+plot_continuous <- function(cut_var, response, i, title){
+    comp_tbl <- table(cut_var,response)[,2]/table(cut_var)
+      unique_cut_var <- unique(cut_var[order(cut_var)])
+      comp_pct <- data.frame(var = unique_cut_var , prob_win = as.numeric(comp_tbl),
+                             n = as.numeric(table(cut_var)),
+                             odds = as.numeric(comp_tbl)/(1-as.numeric(comp_tbl)),
+                             log_odds = log(as.numeric(comp_tbl)/(1-as.numeric(comp_tbl))))
+
+      log_mod <- glm(response ~ poly(cut_var,i) , family = "binomial") 
+      probs <- predict(log_mod,data.frame(cut_var = unique_cut_var), type = 'response')
+      comp_pct$pred_prob <- probs
+      comp_pct$pred_log_odds <- log(probs/(1-probs))
+      
+      #It appears like the number of competitors can be modeled fine as a continuous variable
+      print(ggplot(comp_pct, aes(x=var, y=log_odds))+ geom_point() +  
+        geom_line(aes(x = var, y = pred_log_odds)) + xlim(min(comp_pct$var) - 1,max(comp_pct$var) + 1) +
+          ggtitle(title))
+      print(comp_pct)
+}
+
+#all the log odds appear to be fairly linear
+
+plot_continuous(convert_to_factor(df$pc,25),df$win_bid, i = 1, 'New Variable pc')
+plot_continuous(as.numeric(df$number_of_competitor_bids), df$win_bid, i = 1, 'Number of Competitor Bids')
+plot_continuous(convert_to_factor(df$estimated_years_to_complete,25),df$win_bid, i= 1, 'Estimated Years To Complete')
+plot_continuous(convert_to_factor(df$row_weight_mult,28),df$win_bid, i = 1, 'New Variable row_mult_weight')
+```
+
+<br>
+It appears they can be treated as continuous.. transforming into factor or adding additional polynomial terms does not to appear to add much benefit.
+
+
+<br>
+<br>
+
+####4. Initial modeling: 
+
+<br>
+
+Now that we have examined the continuous variables, lets look into the possibility of adding interaction terms between all binary and continuous variables. The following script creates a logistic regression model for each possible two way interaction and extracts just the significance on the interaction term. The table returned contains only significant interactions found
+
+```{r, warning = F }
+
+var_levels <- sapply(df, function(x) length(levels(x)))
+var_levels <- var_levels[var_levels <= 2]
+interactions_tbl <- df[,names(df) %in% names(var_levels)]
+interactions_tbl %>% select(-win_bid) -> interactions_tbl
+significance_tbl <- NULL
+
+for(i in 1:(ncol(interactions_tbl)-1)){
+  for(j in (i+1):ncol(interactions_tbl)){
+    var1 <- interactions_tbl[,i]
+    var1_name <- names(interactions_tbl)[i]
+    var2 <- interactions_tbl[,j]
+    var2_name <- names(interactions_tbl)[j]
+    interactions <-glm(df$win_bid~ var1 + var2 + I(as.numeric(as.character(var1))*as.numeric(as.character(var2))), family = binomial)
+    interactions <- summary(interactions)
+    interactions <- interactions$coefficients
+    if(nrow(interactions) == 3){next}
+    rownames(interactions) <- c('intercept', var1_name, var2_name, paste0(var1_name, '*', var2_name))
+    interactions <- data.frame(interactions)[4,]
+    interactions <- rownames_to_column(interactions, 'variable')
+    significance_tbl <- rbind(significance_tbl,interactions)
+  }
+}
+
+significance_tbl %>% 
+  filter(Pr...z.. < .001) -> significance_tbl
+
+significance_tbl
+```
+<br>
+The significant interactions are now created and added to the dataset (except competitor_j*row_weight_mult... It just doesn't make any sense to add it to the model)
+```{r}
+
+#create significant interaction variables variables
+
+cost_bidprice <- df$estimated_cost__millions_ * df$winning_bid_price__millions_
+yrs_bidprice <- df$estimated_years_to_complete * df$winning_bid_price__millions_
+compj_weightmult<- (as.numeric(df$competitor_j)-1) * df$row_weight_mult
+
+
+df$cost_bidprice <- log(cost_bidprice)
+df$yrs_bidprice <- log(yrs_bidprice)
+
+```
+<br>
+interactions are examined to see the effect on the response and if the linearity of log odds assumption holds
+```{r }
+plot_continuous(convert_to_factor(df$cost_bidprice,25), df$win_bid, i = 1, 'New Variable cost_bidprice')
+plot_continuous(convert_to_factor(df$yrs_bidprice,25), df$win_bid, i = 1, 'New Variable yrs_bidprice')
+
+
+```
+The assumption of linearity of log odds holds relatively well
+<br>
+<br>
+
+At this step we have created 3 new potential variables (two interactions and one continuous versions of the binary competitor variables) to the dataset and we now look at modeling the data...
+Continued on the modeling page
+
+
+
+

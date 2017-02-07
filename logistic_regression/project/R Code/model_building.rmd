@@ -1,0 +1,276 @@
+---
+title: "Model_building"
+author: "Will Burton"
+date: "September 17, 2016"
+output: html_document
+---
+
+###This analysis will cover two main parts
+####1. Model Building
+####2. Model Validation
+
+<br>
+<br>
+
+****
+****
+
+<br>
+
+####1. Model Building 
+
+<br>
+For model building we build 4 candidate models using forward backward and best subset selection.  
+Each model was found by maximizing AIC.
+```{r, message = F, warning = F}
+library(dplyr)
+library(ggplot2)
+library(pROC)
+library(caret)
+library(tidyr)
+
+
+df <- read.csv('../data/build.csv')
+names(df) <- tolower(names(df))
+
+df$sector <- as.factor(df$sector)
+
+df %>%
+  mutate_each(funs(as.factor),c(2,grep('^competitor', names(df))) ) -> df
+
+df$win_bid <- as.factor(ifelse(df$win_bid == "Yes",1,0))
+
+full_logistic_mod <- glm(win_bid ~ . + sector*region_of_country, data = df, family = binomial)
+
+#define empty model
+nothing <- glm(win_bid~ 1,data = df, family = binomial)
+
+
+#preform backwards, forwards, stepwise, and best subset selection, while maximizing AIC
+backwards <-step(full_logistic_mod, trace = 0) # Backwards selection is the default
+forwards <- step(nothing,
+                 scope=list(lower=formula(nothing),upper=formula(full_logistic_mod)), direction="forward", trace = 0)
+stepwise <- step(nothing, list(lower=formula(nothing),upper=formula(full_logistic_mod)),
+                 direction="both",trace=0)
+
+# best_subset <-  glmulti(formula(full_logistic_mod), data = df,
+#                   level = 1,               # Interactions were already added
+#                   method = "g",            # genetic algorithm ..exhaustive took forever
+#                   crit = "aic",            # AIC as criteria
+#                   confsetsize = 5,         # Keep 5 best models
+#                   plotty = F, report = F,  # No plot or interim reports
+#                   fitfunction = "glm",     # glm function
+#                   family = binomial)       # lm function
+
+#the algorithm starts at a different random starting point each time it is ran, 
+#so I chose the most common output models which also happens to be the same as the backwards selection model
+best_subset <- glm(win_bid ~ 1 + sector + region_of_country + competitor_a + competitor_c + 
+                competitor_f + competitor_h + competitor_j + number_of_competitor_bids + 
+                row_weight_mult, data = df, family = binomial)
+
+```
+<br>
+
+####2. Model Validation  
+
+Out of the four candidate models, there were only two unique models. Stepwise and forwards selection produced the same model formula.  Best subset and backwards selection also produced the same model. For model comparison we start out looking at the ROC curves for the two remaining candidate models against the training data
+```{r, warning = F}
+calculate_ROC <- function(model, response, name, probs = NULL, cv = FALSE, i = NULL){
+  df <- NULL
+  tp_rates <- NULL
+  fp_rates <- NULL
+  probs <- if(is.null(probs)){predict(model, type= 'response')} else{probs}
+  AUC <- as.numeric(auc(response, probs))
+    for(threshold in 0:200){
+      preds <- ifelse(probs > (threshold/200), 1,0)
+      confusion_matrix <- confusionMatrix(preds, response)$table
+      POS <- confusion_matrix[2,2]
+      NEG <- confusion_matrix[1,1]
+      FALPOS <- confusion_matrix[2,1]
+      FALNEG <- confusion_matrix[1,2]
+      tp_rate <- POS / (POS + FALNEG)
+      fp_rate <- FALPOS / (NEG + FALPOS)
+      tn_rate <- NEG / (NEG + FALPOS)
+      SPECIFICITY  <- tn_rate
+      SENSIT <- tp_rate
+      M1SPEC <- fp_rate
+      df <- rbind(df, data.frame(name, AUC,'PROB' = threshold/200,
+                               POS, NEG, FALPOS, FALNEG, SENSIT,
+                               M1SPEC, youden_index = (SENSIT + SPECIFICITY - 1), 
+                               accuracy = (POS + NEG)/(POS + NEG + FALPOS + FALNEG))) 
+                               
+    }
+  if(cv == FALSE){
+  return(df)
+  }else{
+      df$cv_iteration <- paste('test', i)
+      return(df)
+  }
+} 
+
+
+forwards_roc <- calculate_ROC(forwards, df$win_bid, 'Forwards')
+backwards_roc <- calculate_ROC(backwards, df$win_bid, 'Backwards')
+
+ROCS <- rbind(forwards_roc, backwards_roc)
+
+ggplot(forwards_roc) + geom_line(aes(x = M1SPEC, y = SENSIT, colour = name), size = 1.3) + geom_abline(intercept = 0, slope= 1) +
+    annotate("text", label = paste0("AUC = ", round(mean(forwards_roc$AUC),4)), x = .75, y = .25, size = 5, colour = "Black")
+
+ggplot(backwards_roc) + geom_line(aes(x = M1SPEC, y = SENSIT, colour = name), size = 1.3) +  geom_abline(intercept = 0, slope= 1) +
+    annotate("text", label = paste0("AUC = ", round(mean(backwards_roc$AUC),4)), x = .75, y = .25, size = 5, colour = "Black")
+
+ggplot(ROCS) + geom_line(aes(x = M1SPEC, y = SENSIT, colour = name), size = 1.3) + geom_abline(intercept = 0, slope= 1) + ggtitle('Candidate Model ROC Curves') + xlab('1- Specificity') + ylab('Sensitivity') + 
+labs(colour='Candidate Model')
+```
+<br>
+All candidate model ROC curves are very similar when looking at predictions on the training dataset
+<br>
+
+Perform a 10-fold validation and display the roc curve for each fold compared to the training dataset. This plot displays the potential variation in the prediction accuracy of future datasets
+```{r warning = F}
+roc_train_test <- function(model, model_title, df, response, n_folds){
+  set.seed(10)
+  data_folds <- createFolds(response, n_folds)
+  rocs <- NULL
+  for(i in 1:n_folds){
+    temp_model <- glm(formula(model), data = df[unlist(data_folds[-i]),], family = binomial)
+    probs <- predict(temp_model, df[data_folds[[i]],], type = 'response')
+    outcome <- response[data_folds[[i]]]
+    add <- calculate_ROC(model = temp_model, response = outcome,
+                         name = 'forward', probs = probs,i = i, cv = TRUE)
+    rocs <- rbind(rocs,add)
+  }
+  add <- calculate_ROC(model = model, response = response,
+                       name = 'train', i = 'training data', cv = TRUE)
+  rocs_with_train <- rbind(rocs, add)
+  
+  d <- ggplot(rocs_with_train, aes(x = M1SPEC, y = SENSIT, colour = cv_iteration)) + geom_line(size = 1.2) + geom_abline(slope = 1, intercept = 0) + xlab("False-Positive Rate") + ylab("True-Positive Rate") + ggtitle(paste("ROC Curves: ",model_title,"  10-Fold Test vs. Train"))
+  print(d + scale_color_manual(values=c(rep("#CC6666",n_folds), "#000000")) +
+    annotate("text", label = paste0("Mean AUC = ", round(mean(rocs$AUC),4)), x = .75, y = .25, size = 5, colour = "Black"))
+}
+
+
+roc_train_test(forwards, "Forwards Selection", df, df$win_bid, 10)
+roc_train_test(backwards, "Backwards Selection", df, df$win_bid, 10)
+
+```
+<br>
+The mean AUC when averaged over each test fold for the backwards selection model is 0.9496, while the forwards model was 0.9461
+<br>
+
+To further validate the models we perform a 10-fold cross-validation repeated 50 times with different training and testing sets, except this time instead of looking ar AUC, we look at max accuracy. We use the thresholds calculated for both the max youden index and max accuracy from the training set for these tests.   
+The first plot will display the model accuracy using the max accuracy threshold
+```{r, warning = F}
+#cv with threshold
+
+  
+cv <- function(model, df, threshold, folds= 10, response, times = 50){
+  set.seed(5)
+  accuracy <- NULL
+    for(time in 1:times){
+      data_folds <- createFolds(1:nrow(df), k = folds)
+      for(fold in data_folds){
+        train <- df[-fold,]
+        test <- df[fold,]
+        mod <- glm(formula(model), data = df, family = 'binomial')
+        actual <- response[fold]
+        probs <- predict(mod,test, type = 'response')
+        preds <- ifelse(probs > threshold, 1,0)
+      confusion_matrix2 <- confusionMatrix(preds, actual)
+      confusion_matrix <- confusionMatrix(preds, actual)$table
+      POS <- confusion_matrix[2,2]
+      NEG <- confusion_matrix[1,1]
+      FALPOS <- confusion_matrix[2,1]
+      FALNEG <- confusion_matrix[1,2]
+      tp_rate <- POS / (POS + FALNEG)
+      fp_rate <- FALPOS / (NEG + FALPOS)
+      tn_rate <- NEG / (NEG + FALPOS)
+      SPECIFICITY  <- tn_rate
+      SENSIT <- tp_rate
+      M1SPEC <- fp_rate
+      accuracy <- c(accuracy, confusion_matrix2$overall[1])
+      }
+    }
+
+return(accuracy)
+}
+
+
+
+forwards_max_accuracy_threshold <- median(forwards_roc$PROB[forwards_roc$accuracy  == max(forwards_roc$accuracy)])
+print(forwards_max_accuracy_threshold)
+backwards_max_accuracy_threshold <- median(backwards_roc$PROB[backwards_roc$accuracy  == max(backwards_roc$accuracy)])
+print(backwards_max_accuracy_threshold)
+
+forwards_max_youden_threshold <- median(forwards_roc$PROB[forwards_roc$youden_index  == max(forwards_roc$youden_index)])
+backwards_max_youden_threshold <- median(backwards_roc$PROB[backwards_roc$youden_index  == max(backwards_roc$youden_index)])
+
+
+forwards_accuracy <- cv(forwards, df, threshold = forwards_max_accuracy_threshold, response = df$win_bid)
+backwards_accuracy <- cv(backwards, df, threshold = backwards_max_accuracy_threshold , response = df$win_bid)
+
+forwards_youden <- cv(forwards, df, threshold = forwards_max_youden_threshold, response = df$win_bid)
+backwards_youden <- cv(backwards, df, threshold = backwards_max_youden_threshold, response = df$win_bid)
+
+
+data.frame(forwards = forwards_accuracy, backwards = backwards_accuracy) %>% 
+  gather() -> plot_performance
+
+
+ggplot(plot_performance) + geom_density(aes(x = value, fill = key), alpha = .2)+ ggtitle('Distribution of Test Set Accuracy Rates') + labs(fill='Candidate Model') + xlab('Accuracy Rate') 
+                                                                                                                                                                                                                     
+                                                                                                                                                                                                                     
+summary(plot_performance$value[plot_performance$key == 'backwards'])
+summary(plot_performance$value[plot_performance$key == 'forwards'])
+```
+<br>
+Both the distributions are very similar and When summarizing the accuracy levels the mean accuracy only differs by .01%. The forward model performed the best with an accuracy rate of 93.38%. 
+<br>
+<br>
+Now we look at the same plot, but this time using the threshold giving the max youden index from the training set.
+
+```{r}
+
+data.frame(forwards_youden, backwards_youden) %>% 
+  gather() -> plot_youden
+
+
+ggplot(plot_youden) + geom_density(aes(x = value, fill = key), alpha = .2) 
+
+summary(plot_youden$value[plot_youden$key == 'backwards_youden'])
+summary(plot_youden$value[plot_youden$key == 'forwards_youden'])
+```
+<br>
+Using the youden index, both models had the same mean accuracy.
+<br>
+
+Both the forwards model and backwards models perform extremely similar. 
+In conclusion I would choose the forwards model with average mean performance on test data of 93.38%
+```{r} 
+formula(forwards)
+formula(backwards)
+```
+<br>
+<br>
+How many projects can you not apply for and not miss a single win
+```{r }
+probs <- predict(forwards, type = 'response')
+wins <- data.frame(probs, 'win_bid' = df$win_bid)
+
+confusion_matrix <- function(df, threshold){
+  preds <- ifelse(probs > threshold,1,0)
+  return(confusionMatrix(preds,df$win_bid)$table)
+}
+
+for(i in c(.05,.10,.15,.20,.25,.30)){
+  print(confusion_matrix(wins,i))
+}
+
+
+summary(wins$probs[wins$win_bid == 0])  
+summary(wins$probs[wins$win_bid == 1])  
+ggplot(wins) + geom_histogram(aes(x = probs, fill = win_bid), alpha = .5) + xlab('Predicted Probability of Win') + 
+  ggtitle("Distribution of Predicted Probabilities") + scale_fill_discrete(guide_legend(title = "Win Bid"),labels=c("No","Yes"))
+
+```

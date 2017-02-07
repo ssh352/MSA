@@ -1,0 +1,251 @@
+---
+title: "Logistic Regression"
+author: "Will Burton"
+date: "September 11, 2016"
+output: html_document
+---
+
+```{r, warning = F}
+library(dplyr)
+library(tibble)
+library(ggplot2)
+df <- read.csv('insurance.csv')
+df %>% 
+  select(-mmbal_bin) %>% 
+  mutate_each(funs(factor)) -> model_df
+attach(model_df)
+
+var_levels <- sapply(model_df, function(x) length(levels(x)))
+var_levels <- var_levels[var_levels == 2]
+interactions_tbl <- model_df[,names(model_df) %in% names(var_levels)]
+
+significance_tbl <- NULL
+
+for(i in 1:(ncol(interactions_tbl)-1)){
+  for(j in (i+1):ncol(interactions_tbl)){
+    var1 <- interactions_tbl[,i]
+    var1_name <- names(interactions_tbl)[i]
+    var2 <- interactions_tbl[,j]
+    var2_name <- names(interactions_tbl)[j]
+    interactions <-glm(insurance_product~ var1 + var2 + I(as.numeric(var1)*as.numeric(var2)-1), family = binomial)
+    interactions <- summary(interactions)
+    interactions <- interactions$coefficients
+    if(nrow(interactions) == 3){next}
+    rownames(interactions) <- c('intercept', var1_name, var2_name, paste0(var1_name, '*', var2_name))
+    interactions <- data.frame(interactions)[4,]
+    interactions <- rownames_to_column(interactions, 'variable')
+    significance_tbl <- rbind(significance_tbl,interactions)
+  }
+}
+
+significance_tbl %>% 
+  filter(Pr...z.. < .001) -> significance_tbl
+
+significance_tbl
+```
+
+Add all potential significant interactions into the modeling process as shown in significance_tbl into the modeling process.
+*****
+
+
+```{r}
+
+#check for linearity between ordinal variables with > 4 levels
+#they all appear to have a linear relationship minus the first level for each variable
+#I could statistically check for this using the mantel heanszel chi-sq test.
+  df %>% 
+  dplyr::select(one_of(c("ddabal_bin", "savbal_bin", "depamt_bin"))) -> ordinal
+
+for(i in 1:3){
+  y <- table(ordinal[,i], model_df$insurance_product)[,2]/table(ordinal[,i]) 
+  x <- 1:length(y)
+  plot_data <- data.frame(x = as.numeric(x), y = as.numeric(y))
+  print(ggplot(plot_data, aes(x,y)) + geom_point() + xlab(names(ordinal)[i]))
+  print(table(ordinal[,i], model_df$insurance_product))
+}
+```
+
+I could turn these into continuous variables but may not be worth the time since our data set is large enough to accurately estimate the error. Also, there aren't too many levels
+
+
+```{r}
+#stepwise formula based on AIC
+#define full model
+# full_logistic_mod <- glm(insurance_product ~ . + 
+#                            I(as.numeric(checking_account)*as.numeric(retirement_account)) +
+#                            I(as.numeric(checking_account)*as.numeric(money_market)) + 
+#                            I(as.numeric(checking_account)*as.numeric(irabal_bin)) + 
+#                            I(as.numeric(saving_account)*as.numeric(money_market)) + 
+#                            I(as.numeric(retirement_account)*as.numeric(money_market)), data = model_df, family = binomial)
+# #define empty model
+# nothing <- glm(insurance_product~ 1, family = binomial)
+# 
+# 
+# #preform backwards, forwards, and stepwise selection, while optimizing AIC
+# backwards <-step(full_logistic_mod, trace = 0) # Backwards selection is the default
+# forwards <- step(nothing,
+#                  scope=list(lower=formula(nothing),upper=formula(full_logistic_mod)), direction="forward", trace = 0)
+# stepwise <- step(nothing, list(lower=formula(nothing),upper=formula(full_logistic_mod)),
+#                  direction="both",trace=0)
+# 
+
+#Took output from forward, backward, and stepwise, and added terms to satisfy model heirarchy
+
+
+#define interaction terms (could use I(var1 * var2) within the model but wanted to reduce amount of code)
+model_df$ret_mm <- as.factor((as.numeric(retirement_account)-1) * (as.numeric(money_market)-1))
+model_df$che_mm <-as.factor((as.numeric(checking_account)-1) * (as.numeric(money_market)-1))
+model_df$che_ret <-as.factor((as.numeric(checking_account)-1) * (as.numeric(retirement_account)-1))
+model_df$sav_mm <-as.factor((as.numeric(saving_account)-1) * (as.numeric(money_market)-1))
+
+
+forwards_model <- glm(insurance_product ~  savbal_bin + ddabal_bin + cdbal_bin + 
+                        branch_of_bank + checks_bin + atmamt_bin + teller_bin + 
+                        checking_account + money_market + retirement_account + 
+                        saving_account + retirement_account + 
+                        ret_mm + che_mm + che_ret + sav_mm, data = model_df,
+                        family = binomial) 
+
+backwards_model <- glm(insurance_product ~  checking_account + retirement_account + 
+                         money_market + branch_of_bank + ddabal_bin + checks_bin + 
+                         teller_bin + savbal_bin + atmamt_bin + cdbal_bin +
+                         saving_account +  che_ret + sav_mm, data = model_df,
+                         family = binomial) 
+
+
+stepwise_model <- glm(insurance_product ~ savbal_bin + ddabal_bin + cdbal_bin + branch_of_bank + 
+                        checks_bin + atmamt_bin + teller_bin + checking_account + money_market +
+                        retirement_account + saving_account+ret_mm +  che_ret + 
+                        sav_mm, data = model_df,
+                         family = binomial)
+
+
+
+#calculate roc curves for each model
+calculate_ROC <- function(model, response, name, probs = NULL, i = NULL, test = TRUE){
+  tp_rates <- NULL
+  fp_rates <- NULL
+  probs <- if(is.null(probs)){predict(model, type= 'response')} else{probs}
+  AUC <- as.numeric(auc(response, probs))
+    for(threshold in 0:100){
+      preds <- ifelse(probs > (threshold/100), 1,0)
+      tp_rate <- sum(preds[preds == 1] == response[preds == 1])/sum(response == 1)
+      tp_rates <- c(tp_rates, tp_rate)
+      fp_rate <- sum(preds[response == 0] != response[response == 0])/sum(response == 0)
+      fp_rates <- c(fp_rates, fp_rate)
+    }
+  word <- ifelse(test == FALSE, '', 'test')
+  return(data.frame(name, tp_rates, fp_rates, AUC,'cv iteration' =  paste(word, i)))
+ 
+}  
+
+
+#ROC train set
+forwards_roc <- calculate_ROC(forwards_model, as.numeric(insurance_product)-1, 'forwards')
+backwards_roc <-calculate_ROC(backwards_model, as.numeric(insurance_product)-1, 'backwards')
+stepwise_roc <- calculate_ROC(stepwise_model, as.numeric(insurance_product)-1, 'stepwise')
+rocs <- rbind(forwards_roc, backwards_roc, stepwise_roc)
+
+ggplot(rocs, aes(x = fp_rates, y = tp_rates, colour = name)) + geom_line(size = 1) + geom_abline(slope = 1, intercept = 0)
+
+
+#10-fold roc curve for forward backward and step-wise
+#shows the potential variation in future datasets
+roc_train_test <- function(model, model_title){
+  set.seed(10)
+  data_folds <- createFolds(model_df$insurance_product, 10)
+  rocs <- NULL
+  for(i in 1:10){
+    temp_model <- glm(formula(model), data = model_df[unlist(data_folds[-i]),], family = binomial)
+    probs <- predict(temp_model, model_df[data_folds[[i]],], type = 'response')
+    response <- model_df$insurance_product[data_folds[[i]]]
+    add <- calculate_ROC(model = temp_model, response = response,
+                         name = 'forward', probs = probs,i = i)
+    rocs <- rbind(rocs,add)
+  }
+  add <- calculate_ROC(model = model, response = model_df$insurance_product,
+                       name = 'train', i = 'training data', test = FALSE)
+  rocs <- rbind(rocs, add)
+  
+  d <- ggplot(rocs, aes(x = fp_rates, y = tp_rates, colour = cv.iteration)) + geom_line(size = 1.6) + geom_abline(slope = 1, intercept = 0) + xlab("False-Positive Rate") + ylab("True-Positive Rate") + ggtitle(paste("ROC Curves: , ",model_title,"  10-Fold Test vs. Train"))
+  d + scale_color_manual(values=c(rep("#CC6666",10), "#000000")) +
+    annotate("text", label = paste0("Mean AUC = ", round(mean(rocs$AUC),4)), x = .75, y = .25, size = 6, colour = "Black")
+}
+
+
+roc_train_test(forwards_model, "Forwards Selection")
+roc_train_test(backwards_model, "Backwards Selection")
+roc_train_test(stepwise_model, "Stepwise Selection")
+
+#Roc curves comparing each model type on a test data set
+compare_rocs <- function(model, name){
+  set.seed(3)
+  train <- createDataPartition(model_df$insurance_product, times = 1, p= 0.8, list = F)[,1]
+  test <- 1:nrow(model_df)
+  test <- test[-train]
+  
+  train_df <- model_df[train,]
+  test_df <- model_df[test,]
+  model <- glm(formula(model), data = train_df, family = binomial)
+  probs <- predict(model, test_df, type = 'response')
+  response <- test_df$insurance_product
+       for(threshold in 0:100){
+        preds <- ifelse(probs > (threshold/100), 1,0)
+        tp_rate <- sum(preds[preds == 1] == response[preds == 1])/sum(response == 1)
+        tp_rates <- c(tp_rates, tp_rate)
+        fp_rate <- sum(preds[response == 0] != response[response == 0])/sum(response == 0)
+        fp_rates <- c(fp_rates, fp_rate)
+      }
+  return(data.frame(name, tp_rates, fp_rates))   
+}
+
+
+#ROCs for testing
+forwards_roc <- compare_rocs(forwards_model, 'forwards')
+backwards_roc <- compare_rocs(backwards_model, 'backwards')
+stepwise_roc <- compare_rocs(stepwise_model, 'stepwise')
+
+rocs <- rbind(forwards_roc, backwards_roc, stepwise_roc)
+
+#ROC test set
+ggplot(rocs, aes(x = fp_rates, y = tp_rates, colour = name)) + geom_line(size = 1) + geom_abline(slope = 1, intercept = 0)
+
+
+
+
+```
+
+Based on this output it appears all models look like they have very similar performance.  10-fold cross validation is performed to select the final model
+
+
+
+```{r}
+
+library(caret)
+set.seed(5)
+
+fit_control <- trainControl(method = 'cv', number = 10, classProbs = TRUE, savePredictions = TRUE)
+cv_for <- train(formula(forwards_model), data = model_df, method = 'glm', family = binomial,
+            trControl = fit_control)
+cv_back <- train(formula(backwards_model), data = model_df, method = 'glm', family = binomial,
+            trControl = fit_control)
+cv_step <- train(formula(stepwise_model), data = model_df, method = 'glm', family = binomial,
+            trControl = fit_control)
+
+# cv_full <- train(formula(full_logistic_mod), data = model_df, method = 'glm', family = binomial,
+#             trControl = fit_control)
+
+
+cv_for$results
+cv_back$results
+cv_step$results
+
+
+```
+
+
+Choose the forward selection model since it had the highest accuracy when used for cross-validation. 
+
+
+
+

@@ -1,0 +1,199 @@
+---
+title: "Time Series Homework 4"
+author: "Will Burton"
+date: "October 8, 2016"
+output: html_document
+---
+
+Explore the time series data to find patterns and create an optimal model
+<br>
+<br>
+
+***1. Determine season and perform stl***
+```{r message = F, warning = F}
+library(forecast)
+setwd('C:/Users/Will/Documents/MSA/fall/time_series/homeworks/MSA_HW_4_Time_Series/data')
+
+aug_train <- read.csv('AUGUST_TRAIN_CLEAN.csv')
+aug_train <- aug_train[,-4]
+sep_valid <- read.csv('SEPTEMBER_VALID_CLEAN.csv')
+
+# Determine the season using acf plot
+Acf(aug_train$DryBulbFarenheit, 150)
+
+# The Acf shows a season of 24... as expected, this is temperatures in a day
+temp <- ts(aug_train$DryBulbFarenheit, frequency = 24)
+stl_temp <- data.frame(stl(temp, s.window = 7)$time.series)
+
+head(stl_temp)
+
+plot(stl_temp$remainder, type = 'l')
+
+Acf(stl_temp$remainder)
+Pacf(stl_temp$remainder)
+
+# After removing trend and season there is still autocorrelation in the residuals
+```
+
+<br>
+<br>
+
+***2. Create ESM models***
+
+```{r message = F, warning = F}
+
+ses_temp <- ses(temp)
+plot(ses_temp)
+Acf(ses_temp$residuals)
+Pacf(ses_temp$residuals)
+# simple exponential smoothing does not remove season
+
+hw_temp <- hw(temp)
+Acf(hw_temp$residuals,150)
+Pacf(hw_temp$residuals,150)
+# holt winters exponential smoothing does not remove autocorrelation among
+# residuals
+```
+
+<br>
+Since there is still pattern in the residuals we need to remove additional patterns
+using ARIMA models
+<br>
+<br>
+Before ARIMA modeling, we need to determine if the data is stationary after 
+removing trend and season. The trend and season will be removed either using  deterministic (regression) 
+or stochastic (take a difference) methods. The problem with this data is the season is larger than 12, so the seasonal dickey fuller test will not work. To get around this you can: <br>
+1. Try to adjust the data. ex. if you have season of length 24, take every other point and look at it as if the season was 12.<br>
+2. Try both deterministic (regression) and stochastic (difference) methods and see which is more accurate
+<br>
+We will try modeling using both methods, deterministic and stochastic and pick the one with the lowest MAPE.
+
+<br>
+<br>
+***1. Deterministic approach***
+
+```{r warning = F, message = F}
+
+#create hourly binary variables
+hours <- rep(1:24, times = length(temp)/24)
+hours <- factor(hours)
+time <- 1:length(temp)
+hours <- model.matrix(~ hours + time)
+hours <- hours[,-1]
+
+summary(lm(temp~hours))
+#time isn't significant so we can say there is no significant trend identified in the data
+hours <- hours[,-ncol(hours)]
+
+season_arima <- Arima(temp, xreg = hours, method = 'ML')
+
+summary(season_arima)
+
+#look at Acf and Pacf on the residuals after adjusting for seasonality
+plot(season_arima$residuals, col = 'grey')
+abline(h = 0)
+Acf(season_arima$residuals,24*4)
+Pacf(season_arima$residuals,24*4)
+
+#Now we create an ARIMA model using the stationary data created by removing the season deterministically
+det_arima <- Arima(temp,order = c(1,0,0), xreg = hours, method = 'ML')
+Acf(det_arima$residuals,24*4)
+Pacf(det_arima$residuals,24*4)
+
+
+#Look at ljung-box test
+White.LB <- rep(NA, 24*4)
+for(i in 1:length(White.LB)){
+  White.LB[i] <- Box.test(det_arima$residuals, lag = i, type = "Ljung", fitdf = 1)$p.value
+}
+
+White.LB <- pmin(White.LB, .2)
+barplot(White.LB, main = "Ljung-Box Test P-values", ylab = "Probabilities", xlab = "Lags", ylim = c(0, 0.2))
+abline(h = 0.01, lty = "dashed", col = "black")
+abline(h = 0.05, lty = "dashed", col = "black")
+
+#create mape function
+mape <- function(forecast, actual){
+  mean(abs(actual-forecast)/actual)
+}
+
+#Now check out the mape of the deterministic model
+#the model needs the variables for hour in the day, because it was modeled using a variable
+# for hour of the day. (To account for seasonality)
+hours <- factor(1:24)
+hours <- model.matrix(~ hours)
+hours <- hours[,-1]
+
+#Calculate the forecast, mape, and plot to compare forecast to actual
+det_forecast <- data.frame(forecast(det_arima,xreg = hours, h = 24))$Point.Forecast
+mape_det <- mape(det_forecast, sep_valid$DryBulbFarenheit)
+plot(y = det_forecast,x = 1:24, type = 'b', col = 'blue', main = "Detetministic Forecast vs Actual",
+     xlab = 'hours of the day', ylab ='Temp', ylim = c(85,104) )
+lines(y = sep_valid$DryBulbFarenheit, x = 1:24, col = 'orange', type = 'b')
+text(x = 15, y = 85, paste0('mape = ', 100*round(mape_det,5),'%'))
+legend('topright', c('forecast', 'actual'), 
+   lty=1, col=c('blue', 'orange'), bty='n', cex=.75)
+ 
+```
+
+<br>
+***2. Stochastic Approach***
+
+```{r warning = F, message = F}
+#Take a seasonal difference and add in seasonal MA term and AR-1 term
+sto_arima <- Arima(temp,order = c(1,0,0), seasonal = c(0,1,1), method = 'ML')
+Acf(sto_arima$residuals, 24*4)
+Pacf(sto_arima$residuals, 24*4)
+
+#Look at white noise plots
+White.LB <- rep(NA, 24*4)
+for(i in 1:length(White.LB)){
+  White.LB[i] <- Box.test(det_arima$residuals, lag = i, type = "Ljung", fitdf = 1)$p.value
+}
+
+White.LB <- pmin(White.LB, .2)
+barplot(White.LB, main = "Ljung-Box Test P-values", ylab = "Probabilities", xlab = "Lags", ylim = c(0, 0.2))
+abline(h = 0.01, lty = "dashed", col = "black")
+abline(h = 0.05, lty = "dashed", col = "black")
+
+#Calculate mape and plot actual vs. Forecast
+sto_forecast <- data.frame(forecast(sto_arima, h = 24))$Point.Forecast
+mape_sto <- mape(sto_forecast, sep_valid$DryBulbFarenheit)
+plot(y = det_forecast,x = 1:24, type = 'b', col = 'blue', main = "Detetministic Forecast vs Actual",
+     xlab = 'hours of the day', ylab ='Temp', ylim = c(85,104) )
+lines(y = sep_valid$DryBulbFarenheit, x = 1:24, col = 'orange', type = 'b')
+text(x = 15, y = 85, paste0('mape = ', 100*round(mape_sto,5),'%'))
+legend('topright', c('forecast', 'actual'), 
+   lty=1, col=c('blue', 'orange'), bty='n', cex=.75)
+
+```
+
+After analyzing both plots, I would choose an stochastic ARMA(1,0,0)(0,1,1)_24 model. THis model had the lower mape when compared to the deterministic approach
+
+
+
+####Questions for Dr. Labarr:
+1. Is there a stationarity chart ?  A visual way to inspect for stationrity?  Or is the only available test the ADF test (which is really just testing whether a random walk is present or not)
+<br>
+<br>
+2. Can you describe what it means to be deterministic vs. stochastic?
+
+In deterministic models, the output of the model is
+fully determined by the parameter values and the
+initial conditions. 
+LaBarr: 
+
+Stochastic models possess some inherent randomness.
+The same set of parameter values and initial
+conditions will lead to an ensemble of different
+outputs.
+LaBarr:
+
+How to do the seasonal ADF test in R :
+<br>
+<br>
+nsdiffs(temp) - it tells you how many seasonal differences to take (0 or 1, I do need to take a difference or I do not)
+ndiffs(diff(temp, lag = 12)), how many regular differences to take beyond the seasonal difference)
+
+
+

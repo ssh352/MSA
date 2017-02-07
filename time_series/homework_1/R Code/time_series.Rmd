@@ -1,0 +1,280 @@
+---
+title: "time_series"
+author: "Will Burton"
+date: "September 13, 2016"
+output: html_document
+---
+
+```{r}
+
+library(forecast)
+library(fma)
+library(tseries)
+library(expsmooth)
+library(lmtest)
+library(zoo)
+library(dplyr)
+
+train <- read.csv('AUGUST_TRAIN.csv', na.strings = c("", " ", "NA"), stringsAsFactors = FALSE)
+
+# #One observation where drybulbfarenheit is not numeric
+# train[is.na(as.numeric(train$DryBulbFarenheit)),]
+
+# Notice Time is not in the form of minutes or hours.. but actual time
+# of the day
+summary(train$Time)
+
+#convert into a time that makes sense (minutes of the day)
+train$Time <- ifelse(nchar(train$Time) == 4, 
+                     as.numeric(substr(train$Time,1,2)) * 60 +
+                       as.numeric(substr(train$Time,3,4)), 
+                     ifelse(nchar(train$Time) == 3,
+                            as.numeric(substr(train$Time,1,1)) * 60 +
+                              as.numeric(substr(train$Time,2,3)), train$Time)) 
+
+
+#group by date and look at the number of stamps in each day
+train %>% 
+  group_by(Date) %>% 
+  summarise(n = length(Time)) -> n_obs
+data.frame(n_obs)
+
+# Notice the timestamps are not uniform for each day
+#plot(train$Time)
+
+#' This function returns 1 every time the sum of a sequence of numbers sum to >= 60
+#' return 0 if the sum of numbers are < 60
+cumsum_time <- function(times){
+  tot <- 0
+  output <- NULL
+  for(time in times){
+    tot <- tot + time
+    if(tot >= 60){
+      output <- c(output,1)
+      tot <- 0
+    }else{
+      output <- c(output,0)
+    }
+  }
+  return(output)
+}
+
+train %>% 
+  mutate(DryBulbFarenheit = as.numeric(DryBulbFarenheit)) %>% 
+  group_by(Date) %>%    
+  mutate(lag_time = lag(Time)) %>% 
+  mutate(time_diff = ifelse(is.na(Time - lag_time),
+                            60,Time - lag_time)) %>% 
+  mutate(spaced = cumsum_time(time_diff)) %>% 
+  filter(spaced == 1) -> clean_train
+
+clean_train %>% 
+  group_by(Date) %>% 
+  summarise(n_obs = n()) -> n_obs
+print(data.frame(n_obs))
+
+#still have one NA temperature
+#linear interpolation to estimate missing temp
+clean_train$DryBulbFarenheit <- na.approx(clean_train$DryBulbFarenheit)
+
+
+
+par(mfrow  = c(1,2))
+plot(train$Time, ylab = "Time of the day", xlab = 'row_number')
+plot(clean_train$Time, ylab = 'Time of the day', xlab = 'row_number')
+
+```
+
+This plot displays the messy Times compared to the clean times
+
+
+
+###Seasonal-Trend-Lowess Decomposition
+```{r}
+
+par(mfrow = c(1,1))
+# Creation of Time Series Data Object #
+temp <- ts(clean_train$DryBulbFarenheit, frequency = 24)
+
+# Time Series Decomposition #
+model <- stl(temp, s.window = 7)
+trend <- model$time.series[,2]
+seasonal <- model$time.series[,1]
+error <- model$time.series[,3]
+
+# temp_error <- ts(error, frequency = 24)
+# model_error <- stl(error, s.window = 7)
+# trend_error <- model_error$time.series[,2]
+# seasonal_error <- model_error$time.series[,1]
+# error_error <- model_error$time.series[,3]
+
+plot(model)
+plot(error)
+# plot(error)
+# plot(error_error)
+
+```
+```{r fig.cap= 'Actual temperatures overlaid with the exponentially smoothed trend/cycle for the training set'}
+
+plot(temp, col = "grey", main = "Pheonix, AZ: September Temperature (F)", xlab = "", ylab = "Degrees (F)", lwd = 2)
+lines(trend , col = "red", lwd = 2)
+ 
+```
+
+```{r fig.cap =  'Actual temperatures overlaid with the seasonally adjusted temperatures for the training set'}
+
+plot(temp, col = "grey", main = " - Seasonally Adjusted", xlab = "", ylab = "Number of Passengers (Thousands)", lwd = 2)
+lines(temp-seasonal, col = "red", lwd = 2)
+
+```
+*****
+
+##Exponential Smoothing
+####Simple Exponential Smoothing
+
+```{r fig.cap= 'Simple Exponential Smoothing Model' }
+# Building a Simple Exponential Smoothing Model - Temperature Data 
+ses_temp <- ses(temp, h = 24)
+summary(ses_temp)
+
+plot(temp, main = "Temperature simple ESM Forecast", xlab = "Date", ylab = "Temperature (Fahrenheit)")
+
+plot(temp - ses_temp$fitted, main = 'SES residuals')
+```
+
+```{r, fig.cap=  'Ljung-Box Test for Simple Exponential Smoothing Model'}
+# Ljung-Box Test for temp SES Model #
+White.LB <- rep(NA, 10)
+for(i in 1:10){
+  White.LB[i] <- Box.test(ses_temp$residuals, lag = i, type = "Ljung", fitdf = 1)$p.value
+}
+
+White.LB <- pmin(White.LB, 0.2)
+barplot(White.LB, main = "Ljung-Box Test P-values", ylab = "Probabilities", xlab = "Lags", ylim = c(0, 0.2))
+abline(h = 0.01, lty = "dashed", col = "black")
+abline(h = 0.05, lty = "dashed", col = "black")
+
+
+```
+
+
+
+
+```{r, fig.cap =  'Trend (Holt) Exponential Smoothing Model'}
+# Trend Exponential Smoothing Model - Temperature Data 
+holt_temp <- holt(temp, h = 5)
+summary(holt_temp)
+
+par(mfrow = c(2,1))
+plot(holt_temp, main = "Temperature Trend ESM Forecast", 
+     xlab = "Date", ylab = "Temperature (Fahrenheit)")
+lines(holt_temp$fitted, col = 'red', xlab = "Date")
+plot(temp - holt_temp$fitted,ylab = 'residuals', main = 'Residuals')
+```
+
+```{r, fig.cap= ' Ljung-Box Test for Trend Exponential Smoothing Model'}
+# Ljung-Box Test for temp SES + trend Model
+White.LB <- rep(NA, 50)
+for(i in 1:length(White.LB)){
+  White.LB[i] <- Box.test(holt_temp$residuals, lag = i, type = "Ljung", fitdf = 1)$p.value
+}
+
+White.LB <- pmin(White.LB, 0.2)
+barplot(White.LB, main = "Ljung-Box Test P-values", ylab = "Probabilities", xlab = "Lags", ylim = c(0, 0.2))
+abline(h = 0.01, lty = "dashed", col = "black")
+abline(h = 0.05, lty = "dashed", col = "black")
+
+```
+
+
+
+```{r Trend, fig.cap = 'Season + Trend (Holt-Winters) Exponential Smoothing Model' }
+
+#Building a trend + seasonal Exponential Smoothing Model - Pheonix, AZ temperatures
+hw_temp <- hw(temp, h = 24)
+summary(hw_temp)
+
+par(mfrow = c(2,1))
+plot(temp, main = "Temperature Trend~Season~ESM Forecast", xlab = "Date", ylab = "Temperature (Fahrenheit)")
+lines(hw_temp$fitted, col = 'red')
+plot(temp - hw_temp$fitted, ylab = "Residuals", xlab = "Date")
+
+```
+
+```{r, fig.cap= 'Ljung-Box Test for Season + Trend Exponential Smoothing Model' }
+# Ljung-Box Test for SES + trend + seasonal Model
+White.LB <- rep(NA, 50)
+for(i in 1:length(White.LB)){
+  White.LB[i] <- Box.test(hw_temp$residuals, lag = i, type = "Ljung", fitdf = 1)$p.value
+}
+
+White.LB <- pmin(White.LB, 0.2)
+barplot(White.LB, main = "Ljung-Box Test P-values", ylab = "Probabilities", xlab = "Lags", ylim = c(0, 0.2))
+abline(h = 0.01, lty = "dashed", col = "black")
+abline(h = 0.05, lty = "dashed", col = "black")
+```
+
+
+
+```{r, fig.cap =  'Season + Trend + Damped (Holt-Winters) Exponential Smoothing Model'}
+hw_damp_temp <- hw(temp, h = 24, damped = TRUE)
+
+par(mfrow = c(2,1))
+plot(temp, main = "Temperature Trend~Season~Damped~ESM Forecast", xlab = "Date", ylab = "Temperature (Fahrenheit)")
+plot(hw_damp_temp, col = 'red')
+plot(temp - hw_damp_temp$fitted)
+```
+
+```{r, fig.cap= 'Ljung-Box Test for Season + Trend + Damped Exponential Smoothing Model'}
+# Ljung-Box Test for  trend + seasonal + damped exponential smoothing model
+White.LB <- rep(NA, 50)
+for(i in 1:length(White.LB)){
+  White.LB[i] <- Box.test(hw_damp_temp$residuals, lag = i, type = "Ljung", fitdf = 1)$p.value
+}
+
+White.LB <- pmin(White.LB, 0.2)
+barplot(White.LB, main = "Ljung-Box Test P-values", ylab = "Probabilities", xlab = "Lags", ylim = c(0, 0.2))
+abline(h = 0.01, lty = "dashed", col = "black")
+abline(h = 0.05, lty = "dashed", col = "black")
+
+```
+
+******
+##Model Selection:
+```{r}
+
+
+hw_forecast <- summary(hw_temp)
+hw_forecast <- hw_forecast$`Point Forecast`
+hw_damp_forecast <- summary(hw_damp_temp)
+hw_damp_forecast <- hw_damp_forecast$`Point Forecast`
+
+forecast <- (hw_forecast + hw_damp_forecast)/2
+test <- read.csv('SEPTEMBER_VALID.csv')
+test <- test[grep('51$', test$Time),]
+
+plot(test$DryBulbFarenheit, ylim = c(85,105))
+points(hw_forecast, pch = 6)
+points(hw_damp_forecast, pch = 10)
+points(forecast, pch = 10)
+
+
+mape <- function(forecast, actual){
+  n <- length(forecast)
+  return(sum(abs(actual - forecast)/actual)/n)
+}
+  
+mape(hw_damp_forecast, test$DryBulbFarenheit)
+mape(hw_forecast, test$DryBulbFarenheit)
+mape(forecast, test$DryBulbFarenheit)
+
+#residuals
+plot(test$DryBulbFarenheit - hw_forecast, ylim = c(-6,6), pch = 2)
+points(test$DryBulbFarenheit - forecast, ylim = c(-6,6), pch = 3)
+points(test$DryBulbFarenheit - hw_damp_forecast, ylim = c(-6,6), pch = 4)
+abline(h = 0)
+#choose the hw_forecast
+
+```
+
+

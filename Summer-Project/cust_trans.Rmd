@@ -1,0 +1,214 @@
+---
+title: "exploring_cust_trans"
+author: "Will Burton"
+date: "July 9, 2016"
+output: html_document
+---
+
+```{r include=FALSE}
+library(ggplot2)
+library(plotly)
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(psych)
+library(hexbin)
+aggr_cust_trans <- read.csv('aggr_cust_trans.csv')
+cust_trans <- read.csv('cust_trans.csv')
+# aggr_cust_trans <- read.csv('aggr_cust_trans.csv')
+cust_trans$Cust_ID <- as.character(cust_trans$Cust_ID)
+cust_trans$Cov_ID <- as.character(cust_trans$Cov_ID)
+cust_trans$Cov_Limit <- as.numeric(cust_trans$Cov_Limit)
+cust_trans$Reward_R <- as.character(cut(cust_trans$Reward_R, c(0,100,199,299, 499, 549, 559,569, 579)))
+cust_trans$Reward_A <- as.numeric(cust_trans$Reward_A)
+cust_trans$Date <- as.Date(cust_trans$Date)
+
+```
+
+<!-- Start by exploring sumamry statistics and variable distributions -->
+
+<!-- ```{r echo = FALSE} -->
+<!-- str(cust_trans) -->
+<!-- summary(cust_trans) -->
+
+
+<!-- ggplot(cust_trans) + geom_histogram(aes(Income)) + ggtitle("Histogram of Income") + geom_boxplot(aes(x = Income)) -->
+<!-- ggplot(cust_trans) + geom_boxplot(aes(factor(Transaction), Income, colour = factor(Transaction))) + ggtitle("Histogram of Income")  -->
+<!-- ggplot(cust_trans) + geom_boxplot(aes(factor(Type), Income, colour = factor(Type))) + ggtitle("Histogram of Income")  -->
+
+
+<!-- ggplot(cust_trans) + geom_histogram(aes(Reward_A)) + ggtitle("Histogram of Reward_Amount") -->
+<!-- ggplot(cust_trans) + geom_boxplot(aes(factor(Type), Reward_A, colour = factor(Type))) + ggtitle("Reward Amount By Policy Type")  -->
+<!-- ggplot(cust_trans) + geom_boxplot(aes(factor(Reward_R), as.numeric(Reward_A), colour = factor(Reward_R))) + ggtitle("Amount Rewarded vs Cause of Death")  -->
+
+
+<!-- ggplot(cust_trans) + geom_histogram(aes(x = Cov_Limit)) + ggtitle("Histogram of Coverage Limit") -->
+<!-- ggplot(cust_trans) + geom_boxplot(aes(factor(Transaction), Cov_Limit, colour = factor(Transaction))) + ggtitle("Coverage Limit By Transaction")  -->
+<!-- ggplot(cust_trans) + geom_boxplot(aes(factor(Type), Cov_Limit, colour = factor(Type))) + ggtitle("Coverage Limit By Coverage Type")  -->
+
+
+<!-- ggplot(cust_trans, aes(x = Type)) + geom_bar(aes(y = (..count..)/sum(..count..), fill=  Type)) + -->
+<!--     ylab("Percent occurance") -->
+
+<!-- ggplot(cust_trans, aes(x = Transaction)) + geom_bar(aes(y = (..count..)/sum(..count..), fill=  Transaction)) + -->
+<!--     ylab("Percent occurance") -->
+
+<!-- ggplot(cust_trans, aes(x = Reward_R)) + geom_bar(aes(y = (..count..)/sum(..count..), fill=  Reward_R))+ -->
+<!--     ylab("Percent occurance") -->
+
+<!-- hexbinplot(Income ~ Cov_Limit, data = cust_trans) -->
+
+
+<!-- ``` -->
+
+Interesting Things:
+1. Proportion of Categorical Variables (Type, Transaction, Reward_R) does not change over time  
+2. Continous Variables (Income, Cov_Limit, Reward_Amt) do not change over time
+
+```{r echo = F}
+options(width = 10000)
+cust_trans %>%
+  filter(Cust_ID %in% aggr_cust_trans$Cust_ID[aggr_cust_trans$trans_n_R > 2]) -> mult_reward
+
+cust_trans[is.na(cust_trans)] <- 0
+cust_trans$Transaction <- factor(cust_trans$Transaction)
+cust_trans$Type <- factor(cust_trans$Type)
+cust_trans$Reward_R <- factor(cust_trans$Reward_R)
+
+
+x <- data.frame(model.matrix(~ Transaction + Type + Reward_R, data=cust_trans,
+                             contrasts.arg=list(Transaction=contrasts(cust_trans$Transaction, contrasts=F),
+                                                Type=contrasts(cust_trans$Type, contrasts=F),
+                                                Reward_R=contrasts(cust_trans$Reward_R, contrasts=F))))
+x <- x[,-c(1,9,17)]
+
+
+names(x)[8:14] <- c('accident', 'criminal', 'health', 'danger', 'war', 'aviation', 'suicide')
+plot_cust_trans <-cbind(cust_trans,x)
+
+plot_cust_trans %>%
+  select(one_of(c("Date",names(x)))) %>%
+  mutate_each(funs(rollsum(.,5000, align = 'center', na.pad= T)/5000), -Date) %>%
+  na.omit() ->  plot_cust_trans
+
+plot_cust_trans %>%
+  select(Date, TypeT, TypeV, TypeW) %>%
+  gather(key = 'Type', value = 'pct.occurance', TypeT, TypeV, TypeW) -> Type_plot
+
+plot_cust_trans %>%
+  select(Date, TransactionCH, TransactionCL, TransactionIN, TransactionRE) %>%
+  gather(key = 'Type', value = 'pct.occurance', TransactionCH,
+         TransactionCL, TransactionIN, TransactionRE) -> Transaction_plot
+
+plot_cust_trans %>%
+  select(Date, accident, criminal, health, danger, war, aviation, suicide ) %>%
+  gather(key = 'Type', value = 'pct.occurance', accident, criminal,
+         health, danger, war, aviation, suicide) -> Reward_A_plot
+
+
+ggplot(Type_plot) + geom_line(aes(x = Date, y = pct.occurance, colour = Type)) + facet_grid(. ~ Type)
+
+ggplot(Transaction_plot) + geom_line(aes(x = Date, y = pct.occurance, colour = Type)) + facet_grid(. ~ Type)
+
+ggplot(Reward_A_plot) + geom_line(aes(x = Date, y = pct.occurance, colour = Type)) + facet_grid(. ~ Type)
+```
+
+
+
+3. The total number of customers and policies are currently both declining: when looking at 'Whole'
+4. The ratio of the number of policies to customers has steadily increased over time
+
+
+```{r include = F}
+cust_trans %>% 
+  filter(Type == "W") %>% 
+  arrange(Date) %>% 
+  mutate(cov_indicator = ifelse(Transaction == "IN", 1, 
+                                (ifelse(Transaction == "RE",-1,0)))) %>% 
+  mutate(Active_Policies = cumsum(cov_indicator))-> cov_flow
+                                 
+cust_trans %>% 
+  filter(Type == 'W') %>% 
+  group_by(Cust_ID) %>% 
+  summarise(first_trans = min(Date), last_trans = max(Date[Transaction == 'RE'])) %>% 
+  mutate(match_first = paste(first_trans, Cust_ID, sep = '_')) %>% 
+  mutate(match_last = paste(last_trans, Cust_ID, sep = '_')) %>% 
+  select(Cust_ID, match_first, match_last) -> find_cust 
+
+cov_flow %>% 
+  mutate(match = paste(Date, Cust_ID, sep = '_')) %>% 
+  mutate(cust_indicator = ifelse(match %in% find_cust$match_first,1,
+                          ifelse(match %in% find_cust$match_last,-1,0))) %>% 
+  mutate(Active_Customers = cumsum(cust_indicator)) %>% 
+  mutate(Ratio_Cust_to_Policy =  Active_Policies / Active_Customers ) %>% 
+  select(Date, Active_Policies, Active_Customers, Ratio_Cust_to_Policy) -> account_flow
+
+time_series <- gather(account_flow, key = 'variable', value = 'acct_info', Active_Policies, Active_Customers)
+```
+
+
+
+```{r echo = F}
+options(width = 10000)
+#number of coverage policies over time
+ggplot(time_series) + 
+  geom_line(aes(x = Date, y = acct_info, colour = variable), size = 1.5) +
+  ggtitle('Number of Active Customers and Policies Over Time') + 
+  ylab('Count')
+
+ggplot(account_flow) + 
+  geom_line(aes(x = Date, y = Ratio_Cust_to_Policy), size = 1.5) +
+  ggtitle('Ratio of Active Policies to Customers Over Time') + 
+  ylab('Ratio')
+```
+
+
+5. The Variation and mean of amount Rewarded is increasing over time
+```{R echo = F}
+cust_trans %>% 
+  group_by(Cust_ID) %>% 
+  summarise(reward_paid = sum(Reward_A, na.rm = T),
+            Date = max(Date)) %>% 
+  arrange(Date) %>%
+  mutate(rolling_avg_cost = rollmean(reward_paid, 1000, na.pad = T, align = 'center'))  %>%
+  mutate(rolling_var_cost = rollapply(reward_paid, width = 1000, FUN = sd, na.pad = TRUE, align = 'center')) %>% 
+  select(Date, rolling_avg_cost, rolling_var_cost, reward_paid) %>% 
+  filter(!is.na(rolling_avg_cost)) %>% 
+  select(Date, rolling_avg_cost, rolling_var_cost) %>% 
+  gather(key = 'key', value = 'value', rolling_avg_cost, rolling_var_cost) ->cust_cost
+
+ggplot(cust_cost) + 
+  geom_line(aes(x = Date, y = value, colour = key)) + 
+  ggtitle('Rolling Average & Variance or amount rewarded per customer')
+```
+
+
+6. The percent of people claiming is steadily increasing
+```{r echo = F}
+cust_trans %>% 
+  group_by(Cust_ID) %>% 
+  summarise(reward_paid = sum(Reward_A, na.rm = T),
+            Date = max(Date)) %>% 
+  arrange(Date) %>%
+  mutate(recieved_reward = ifelse(reward_paid > 0, 1,0)) %>% 
+  mutate(rolling_pct = rollapply(recieved_reward, width = 1000, FUN = sum, na.pad = T, align = 'center')/1000) %>% 
+  filter(!is.na(rolling_pct)) %>% 
+  select(Date, rolling_pct) -> claim_pct
+  
+ggplot(claim_pct) + 
+  geom_line(aes(x = Date, y = rolling_pct)) + 
+  ggtitle("Rolling Percent of People That Recieve a Reward") + 
+  ylab("Percent Recieved Reward") 
+
+```
+
+
+
+Weird Data Issues:
+According to the data, this customer (along with many others) claimed a reward for separate policies on three different dates, which seems odd.
+
+```{r echo = FALSE}
+options(width = 10000)
+head(mult_reward,13)
+```
+

@@ -1,0 +1,78 @@
+---
+title: "Association Analysis Homework"
+author: "Will Burton"
+date: "October 8, 2016"
+output: html_document
+---
+
+####Prompt <br>
+The restaurant owner would like to add wine suggestions to the menu next to each meat and analyze her  
+customer ordering habits in general. She is also interested in showing a picture of a popular meal of hers in  
+an ad in Gourmet Diner magazine. Your job is to address her interests and also to report anything else of  
+interest in terms of customer ordering habits, all in a nice summary report that is complete but to the point.  
+ <br>
+ <br>
+ 
+####Load necessary packages and data
+```{r, message = F, warning = F}
+library(arules)
+library(arulesViz)
+library(dplyr)
+library(tidyr)
+setwd('C:/Users/Will/Documents/MSA/fall/data_mining/homework_1/data')
+data<- read.csv('restaurantData.csv', stringsAsFactors = T)
+```
+
+####interest 1.   Find associations between wine and meat
+
+```{r, warning = F, message = F}
+#Since there was more than one meat, wine, and side per order number, the data needs to be split
+#into seperate order numbers
+
+#only look at meat and wine
+data %>%
+  dplyr::filter(type == 'Meat' | type == 'Wine') -> meat_wine 
+  
+#renumber to order numbers to have a single meat and wine combination per order number 
+meat_wine %>% 
+  mutate(orderNumber = sort(rep(seq(1,nrow(meat_wine)/2),2))) %>%
+  mutate(orderNumber = factor(orderNumber)) %>% 
+  tidyr::spread(type , order)-> meat_wine
+
+#turn the resulting dataset into a dataset of class transaction
+meat_wine <- as(meat_wine, 'transactions')
+
+#Now we apply functions from the arules package to perform association analysis
+
+#apriori algorithm
+#target is association rules,
+#minimum length of association is two factors
+#min confidence = .01
+#min support = .01
+apriori_rules <- apriori(meat_wine, list(target = 'rules', supp=0.01, minlen = 2, conf = .01))  
+
+#Return support for pairs:
+head(inspect(sort(apriori_rules, by = 'lift')),10)
+
+plot(apriori_rules, cex = 1)
+```
+
+
+####Interest 2.   Most popular meal 
+<br>
+```{r warning = F, message = F}
+#To find the most popular meal, we concatenate side, wine, and meat and look at counts.
+# The top 5 meals are returned
+data %>% 
+  mutate(orderNumber = sort(rep(seq(1,nrow(data)/3),3))) %>% 
+  tidyr::spread(type,order) %>% 
+  mutate(meal_combos  = paste(Meat, Side, Wine, sep = ', ')) %>% 
+  group_by(meal_combos) %>% 
+  summarise(Number_of_orders = n()) %>% 
+  arrange(desc(Number_of_orders))-> meat_wine_side
+  
+head(data.frame(meat_wine_side))
+```
+The most popular meal combo is:
+Pork Tenderloin, Roasted Root Veg, Cantina Pinot Bianco with 1154 orders,
+82 orders higher than the next highest order
